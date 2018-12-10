@@ -24,6 +24,17 @@ class Room(object):
         self.directions = dict.fromkeys(directions)
 
 
+class Bfs(object):
+    def __init__(self, rooms: dict, current: Room, target: str):
+        self._rooms = rooms
+        self._current = current
+        self.target = target
+
+    def get_next_direction(self):
+        # TODO Pick From self._current.directions.
+        return "east"
+
+
 class CustomAgent:
     """ Template agent for the TextWorld competition. """
 
@@ -117,6 +128,7 @@ class CustomAgent:
         self._ingredient_lists = [[] for _ in obs]
         self._direction_lists = [[] for _ in obs]
         self._rooms = [dict() for _ in obs]
+        self._searches = [None for _ in obs]
 
     def _add_features(self, obs: List[str], infos: Dict[str, List[Any]]) -> None:
         """
@@ -159,7 +171,8 @@ class CustomAgent:
 
         return ingredients, directions
 
-    def _get_room_name(self, ob: str) -> Optional[str]:
+    @staticmethod
+    def _get_room_name(ob: str) -> Optional[str]:
         result = None
         m = re.search(r'-=\s*([^=]+) =-', ob)
         if m:
@@ -240,11 +253,25 @@ class CustomAgent:
                 result.append("look cookbook")
                 continue
 
-            if not Feature.SEEN_COOKBOOK in feats:
-                # TODO Get to the Kitchen
-                pass
+            # TODO Keep track of last direction traveled so that the rooms can be updated.
 
-            # TODO Find ingredients or follow directions.
+            if self._searches[game_index] is not None:
+                if self._searches[game_index].target == current_room:
+                    # Found target.
+                    self._searches[game_index] = None
+                else:
+                    # Keep searching.
+                    result.append(self._searches[game_index].get_next_direction())
+                    continue
+
+            if not Feature.SEEN_COOKBOOK in feats:
+                # Find the Kitchen.
+                self._searches[game_index] = Bfs(self._rooms[game_index], self._rooms[game_index][current_room],
+                                                 "Kitchen")
+                result.append(self._searches[game_index].get_next_direction())
+                continue
+
+            # TODO Find ingredients.
 
             result.append("")
 
