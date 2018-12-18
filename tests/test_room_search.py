@@ -66,5 +66,46 @@ class TestRoomSearch(unittest.TestCase):
         self.assertEqual(target, current_room.name)
 
     def test_search_known_path(self):
-        # TODO
-        pass
+        # Kitchen -> Living Room -> Driveway -> Street -> Supermarket
+        #    v            v
+        #  Pantry     Corridor
+
+        sup = Room("Supermarket", {})
+        street = Room("Street", {'east': sup})
+        driveway = Room("Driveway", {'east': street})
+        corridor = Room("Corridor", {})
+        living_room = Room("Living Room", {'east': driveway, 'south': corridor})
+        pantry = Room("Pantry", {})
+        kitchen = Room("Kitchen", {'east': living_room, 'south': pantry})
+        rooms = [
+            kitchen, living_room, driveway, street, sup,
+            pantry, corridor,
+        ]
+        complete_map(rooms)
+        rooms = {room.name: room for room in rooms}
+
+        current_room = kitchen
+        target = "Supermarket"
+        s = RoomSearch(rooms, current_room, target)
+        for _ in range(4):
+            s.visited.add(current_room.name)
+            s.current_room = current_room
+            direction = s.get_next_direction()
+            prev_room = current_room
+            # Update map.
+            complete_current_room = rooms[prev_room.name].directions[direction]
+            current_room = rooms.get(complete_current_room.name)
+            if current_room is None:
+                directions = dict.fromkeys(complete_current_room.directions.keys())
+                current_room = Room(complete_current_room.name, directions)
+                directions = current_room.directions
+                rooms[current_room.name] = current_room
+            else:
+                directions = current_room.directions
+
+            directions[opposite_dir(direction)] = prev_room
+            prev_room.directions[direction] = current_room
+
+            if current_room.name == target:
+                break
+        self.assertEqual(target, current_room.name)

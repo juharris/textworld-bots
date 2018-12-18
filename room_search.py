@@ -1,3 +1,5 @@
+import random
+
 from room import Room
 
 
@@ -22,30 +24,55 @@ class RoomSearch(object):
         self._rooms = rooms
         self.current_room = current_room
         self.target_name = target_name
-        self._backtrack_target = None
-        self._search_stack = []
+        self.optimal_path = None
+        self._backtrack_stack = []
         self.visited = {self.current_room.name}
 
     def get_next_direction(self):
         if self.target_name in self._rooms:
-            pass
-            # TODO Find a path to the room.
+            self.optimal_path = self.get_path_to(self.target_name)
+        if self.optimal_path is not None and len(self.optimal_path) > 0:
+            result = self.optimal_path.pop()
+            self.prev_direction_traveled = result
+            return result
         result = None
+        direction_options = []
         for direction, room in self.current_room.directions.items():
             if room is not None and room.name == self.target_name:
                 result = direction
                 break
-            elif room is not None and room.name == self._backtrack_target:
-                self._backtrack_target = None
-                result = direction
-                break
-            elif room is not None and room.name not in self.visited:
-                result = direction
-            elif room is None:
-                result = direction
+            elif room is None or room.name not in self.visited:
+                # Don't know what that room is OR haven't visited that room.
+                direction_options.append(direction)
         if result is None:
-            # Nowhere to go.
-            # TODO Set self._backtrack_target.
-            self._backtrack_target = 'TODO'
+            # Nowhere specific to go.
+            if len(direction_options) == 0:
+                # Nowhere to go. Need to backtrack.
+                assert len(self._backtrack_stack) > 0
+                backtrack_target = self._backtrack_stack.pop()
+                self.optimal_path = self.get_path_to(backtrack_target)
+                result = self.optimal_path.pop()
+                self.prev_direction_traveled = result
+                return result
+            result = random.choice(direction_options)
+            # If we reach a dead-end then we should come back to here.
+            self._backtrack_stack.append(self.current_room.name)
         self.prev_direction_traveled = result
         return result
+
+    def get_path_to(self, target_room_name: str):
+        queue = [self.current_room]
+        paths = {self.current_room.name: []}
+        found = False
+        while not found and len(queue) > 0:
+            current_room = queue.pop(0)
+            path_so_far = paths[current_room.name]
+            for direction, room in current_room.directions.items():
+                if room is not None:
+                    if room.name not in paths:
+                        paths[room.name] = path_so_far + [direction]
+                        queue.append(room)
+                    if room.name == target_room_name:
+                        found = True
+                        break
+        return paths[target_room_name]
