@@ -16,8 +16,11 @@ black pepper
 bell pepper
 egg
 lettuce
+salt
 sugar
+pepper
 potato
+red hot pepper
 """.split('\n')
 _all_ingredients = list(filter(None, map(str.strip, _all_ingredients)))
 
@@ -90,8 +93,8 @@ def _get_feats_with_qualifier(feats: Dict, qualifier: Union[str, tuple]):
     result = []
     if not isinstance(qualifier, tuple):
         qualifier = (qualifier,)
-    for feat in feats:
-        if isinstance(feat, tuple) and feat[:len(qualifier)] == qualifier:
+    for feat, val in feats.items():
+        if val != False and isinstance(feat, tuple) and feat[:len(qualifier)] == qualifier:
             result.append(feat[len(qualifier)])
     return result
 
@@ -228,15 +231,16 @@ class CustomAgent:
             feats[Feature.CURRENT_ROOM] = self._get_room_name(ob) or feats[Feature.CURRENT_ROOM]
 
             for direction in _directions:
-                if re.search(r'\b{}\b'.format(direction), ob, re.IGNORECASE):
-                    feats[_direction_feat(direction)] = True
+                present = re.search(r'\b{}\b'.format(direction), ob, re.IGNORECASE) is not None
+                feats[_direction_feat(direction)] = present
 
-            # TODO Just check needed ingredients.
-            # TODO Consider ingredient names that are subsets of another.
-            # E.g. don't confuse 'pepper' with 'bell pepper'.
-            for ingredient in sorted(_all_ingredients, key=len, reverse=True):
-                if re.search(r'\b{}\b'.format(ingredient), ob, re.IGNORECASE):
-                    feats[_ingredient_present_feat(ingredient)] = True
+            if not feats[Feature.COOKBOOK_SHOWING]:
+                # TODO Just check needed ingredients.
+                # TODO Consider ingredient names that are subsets of another.
+                # E.g. don't confuse 'pepper' with 'bell pepper'.
+                for ingredient in sorted(_all_ingredients, key=len, reverse=True):
+                    present = re.search(r'\b{}\b'.format(ingredient), ob, re.IGNORECASE) is not None
+                    feats[_ingredient_present_feat(ingredient)] = present
 
     def _gather_recipe(self, ob):
         ingredients = []
@@ -283,7 +287,7 @@ class CustomAgent:
             rooms[current_room_name] = room
         if self._searches[game_index] is not None and prev_room is not None:
             prev_dir = self._searches[game_index].prev_direction_traveled
-            rooms[prev_room].directions[prev_dir] = room
+            rooms[prev_room.name].directions[prev_dir] = room
             room.directions[opposite_dir(prev_dir)] = prev_room
 
     def _end_episode(self, obs: List[str], scores: List[int], infos: Dict[str, List[Any]]) -> None:
@@ -338,6 +342,8 @@ class CustomAgent:
                 continue
 
             current_room_name: str = feats[Feature.CURRENT_ROOM]
+            rooms = self._rooms[game_index]
+
             if self._searches[game_index] is not None:
                 self._searches[game_index].visited.add(current_room_name)
                 prev_room: Room = self._searches[game_index].current_room
@@ -345,52 +351,75 @@ class CustomAgent:
                 prev_room = None
             self._update_map(game_index,
                              prev_room, current_room_name, ob)
-            current_room = self._rooms[game_index][current_room_name]
+            current_room = rooms[current_room_name]
 
             if self._searches[game_index] is not None:
                 # There is a search in progress.
                 self._searches[game_index].current_room = current_room
-                if self._searches[game_index].target == current_room_name:
+                if self._searches[game_index].target_name == current_room_name:
                     # Found target, stop the search.
                     self._searches[game_index] = None
                 else:
                     # Keep searching.
-                    result.append(self._searches[game_index].get_next_direction())
-                    continue
+                    direction = self._searches[game_index].get_next_direction()
+                    if direction is not None:
+                        result.append(direction)
+                        continue
+                    else:
+                        # No path exists.
+                        self._searches[game_index] = None
 
             if not feats[Feature.SEEN_COOKBOOK] and feats[Feature.COOKBOOK_PRESENT]:
                 result.append("look cookbook")
                 continue
 
-            if not Feature.SEEN_COOKBOOK[feats]:
+            if not feats[Feature.SEEN_COOKBOOK]:
                 # Find the Kitchen.
-                self._searches[game_index] = RoomSearch(self._rooms[game_index], current_room, "Kitchen")
+                self._searches[game_index] = RoomSearch(rooms, current_room, "Kitchen")
                 result.append(self._searches[game_index].get_next_direction())
                 continue
 
             # TODO Find ingredients.
 
             # Check if current room has the ingredient.
-            if not feats[Feature.FOUND_ALL_INGREDIENTS] and \
-                    current_room_name != "Kitchen" and feats[Feature.NUM_ITEMS_HELD] < _max_capacity:
-                take_item = False
-                for ingredient in set(_get_all_required_ingredients(feats)) & set(_get_all_present_ingredients(feats)):
-                    # Pick up the ingredient so that we can bring it to the Kitchen.
-                    feats[Feature.NUM_ITEMS_HELD] += 1
-                    feats[_carrying_feat(ingredient)] = True
-                    result.append("take {}".format(ingredient))
-                    take_item = True
-                    break
-                if take_item:
-                    continue
-                else:
-                    # TODO Go find the item and record where.
-                    pass
+            if not feats[Feature.FOUND_ALL_INGREDIENTS]:
+                if current_room_name == "Kitchen" and feats[Feature.NUM_ITEMS_HELD] < _max_capacity:
+                    # Go find ingredients.
+                    # TODO Keep track of the target room and ingredient.
+                    ingredients_needed = tuple(set(_get_all_required_ingredients(feats)) - set(_get_all_present_ingredients(feats)))
+                    assert len(ingredients_needed) > 0
+                    ingredient = random.choice(ingredients_needed)
+                    target_room_name = random.choice(_ingredient_to_rooms[ingredient])
+                    self._searches[game_index] = RoomSearch(rooms, current_room, target_room_name)
+                    direction = self._searches[game_index].get_next_direction()
+                    if direction is not None:
+                        result.append(direction)
+                        continue
+                    else:
+                        # No path exists.
+                        self._searches[game_index] = None
+                        # TODO Pick another room.
+
+                elif current_room_name != "Kitchen" and feats[Feature.NUM_ITEMS_HELD] < _max_capacity:
+                    take_item = False
+                    for ingredient in set(_get_all_required_ingredients(feats)) & set(
+                            _get_all_present_ingredients(feats)):
+                        # Pick up the ingredient so that we can bring it to the Kitchen.
+                        feats[Feature.NUM_ITEMS_HELD] += 1
+                        feats[_carrying_feat(ingredient)] = True
+                        result.append("take {}".format(ingredient))
+                        take_item = True
+                        break
+                    if take_item:
+                        continue
+                    else:
+                        # TODO Keep track of the target room and ingredient.
+                        pass
 
             if not feats[Feature.FOUND_ALL_INGREDIENTS] and feats[Feature.NUM_ITEMS_HELD] == _max_capacity:
                 if current_room_name != "Kitchen":
                     # Bring items to Kitchen.
-                    self._searches[game_index] = RoomSearch(self._rooms[game_index], current_room, "Kitchen")
+                    self._searches[game_index] = RoomSearch(rooms, current_room, "Kitchen")
                     result.append(self._searches[game_index].get_next_direction())
                     continue
                 elif not feats[Feature.STARTED_RECIPE]:
@@ -402,5 +431,4 @@ class CustomAgent:
             # TODO Go through recipe steps.
 
             result.append("")
-
         return result

@@ -9,7 +9,9 @@ class Room(object):
         else:
             self.directions = directions
 
-    def __str__(self):
+    def __repr__(self):
         directions = {direction: room.name if room is not None else None for (direction, room) in
                       self.directions.items()}
         return f'name={self.name}, directions={directions}'
+
+    __str__ = __repr__
