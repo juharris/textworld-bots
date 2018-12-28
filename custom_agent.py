@@ -60,6 +60,7 @@ class Feature(Enum):
 
     FOUND_ALL_INGREDIENTS = 7
     STARTED_RECIPE = 8
+    OPENED_FRIDGE = 9
 
     def __repr__(self):
         return self.name
@@ -367,6 +368,7 @@ class CustomAgent:
                         continue
                     else:
                         # No path exists.
+                        # TODO Need to backtrack to whatever we were doing before.
                         self._searches[game_index] = None
 
             if not feats[Feature.SEEN_COOKBOOK] and feats[Feature.COOKBOOK_PRESENT]:
@@ -379,6 +381,11 @@ class CustomAgent:
                 result.append(self._searches[game_index].get_next_direction())
                 continue
 
+            if current_room_name == "Kitchen" and not feats[Feature.OPENED_FRIDGE]:
+                feats[Feature.OPENED_FRIDGE] = True
+                result.append("open fridge")
+                continue
+
             # TODO Find ingredients.
 
             # Check if current room has the ingredient.
@@ -386,19 +393,25 @@ class CustomAgent:
                 if current_room_name == "Kitchen" and feats[Feature.NUM_ITEMS_HELD] < _max_capacity:
                     # Go find ingredients.
                     # TODO Keep track of the target room and ingredient.
-                    ingredients_needed = tuple(set(_get_all_required_ingredients(feats)) - set(_get_all_present_ingredients(feats)))
+                    ingredients_needed = tuple(
+                        set(_get_all_required_ingredients(feats)) - set(_get_all_present_ingredients(feats)))
                     assert len(ingredients_needed) > 0
-                    ingredient = random.choice(ingredients_needed)
-                    target_room_name = random.choice(_ingredient_to_rooms[ingredient])
-                    self._searches[game_index] = RoomSearch(rooms, current_room, target_room_name)
-                    direction = self._searches[game_index].get_next_direction()
-                    if direction is not None:
-                        result.append(direction)
-                        continue
-                    else:
-                        # No path exists.
-                        self._searches[game_index] = None
-                        # TODO Pick another room.
+                    direction = None
+                    while direction is None:
+                        ingredient = random.choice(ingredients_needed)
+                        room_options = _ingredient_to_rooms[ingredient]
+                        for target_room_name in random.sample(room_options, len(room_options)):
+                            self._searches[game_index] = RoomSearch(rooms, current_room, target_room_name)
+                            direction = self._searches[game_index].get_next_direction()
+                            if direction is not None:
+                                break
+                            else:
+                                # No path exists.
+                                self._searches[game_index] = None
+
+                    # Found a direction to go.
+                    result.append(direction)
+                    continue
 
                 elif current_room_name != "Kitchen" and feats[Feature.NUM_ITEMS_HELD] < _max_capacity:
                     take_item = False
