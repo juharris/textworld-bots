@@ -336,6 +336,8 @@ class CustomAgent:
 
         self._add_features(obs, infos)
 
+        # TODO Check inventory.
+
         result = []
         for game_index, ob, done, feats in zip(range(len(obs)), obs, dones, self._game_features):
             if done:
