@@ -2,6 +2,7 @@ import random
 import re
 from collections import defaultdict
 from enum import Enum
+from operator import itemgetter
 from typing import Any, Dict, List, Optional, Union
 
 from textworld import EnvInfos
@@ -61,13 +62,18 @@ class Feature(Enum):
     HOLDING_KNIFE = 7
 
     FOUND_ALL_INGREDIENTS = 8
-    STARTED_RECIPE = 9
-    OPENED_FRIDGE = 10
+
+    OPENED_FRIDGE = 9
+
+    CURRENT_RECIPE_STEP = 10
 
     def __repr__(self):
         return self.name
 
 
+#######################################
+# Functions For Features
+#######################################
 def _feat(qualifier, term):
     return (qualifier, term)
 
@@ -98,7 +104,10 @@ def _get_feats_with_qualifier(feats: Dict, qualifier: Union[str, tuple]):
         qualifier = (qualifier,)
     for feat, val in feats.items():
         if val != False and isinstance(feat, tuple) and feat[:len(qualifier)] == qualifier:
-            result.append(feat[len(qualifier)])
+            if len(feat) == len(qualifier) + 1:
+                result.append(feat[len(qualifier)])
+            else:
+                result.append(feat[len(qualifier):])
     return result
 
 
@@ -112,6 +121,35 @@ def _get_all_required_ingredients(feats: Dict) -> List[str]:
 
 def _get_carrying(feats: Dict):
     return _get_feats_with_qualifier(feats, 'carrying')
+
+
+def _get_recipe_steps(feats: Dict):
+    """
+    :param feats: The features.
+    :return: The recipe steps in order.
+    """
+    recipe_feats = _get_feats_with_qualifier(feats, 'recipe_step')
+    recipe_feats.sort(key=itemgetter(0))
+    return [step[1] for step in recipe_feats]
+
+
+#######################################
+# END Functions For Features
+#######################################
+_roast_pattern = re.compile('roast (?P<ingredient>.*)')
+_fry_pattern = re.compile('fry (?P<ingredient>.*)')
+
+
+def _commandify_recipe_step(recipe_step):
+    result = recipe_step
+    m = _roast_pattern.match(recipe_step)
+    if m:
+        result = f"cook {m['ingredient']} with oven"
+    elif _fry_pattern.match(recipe_step):
+        m = _fry_pattern.match(recipe_step)
+        result = f"cook {m['ingredient']} with stove"
+
+    return result
 
 
 class CustomAgent:
@@ -217,8 +255,12 @@ class CustomAgent:
         """
         # TODO
         for ob, feats in zip(obs, self._game_features):
+            # Defaults
             if feats[Feature.NUM_ITEMS_HELD] == False:
                 feats[Feature.NUM_ITEMS_HELD] = 0
+
+            if feats[Feature.CURRENT_RECIPE_STEP] == False:
+                feats[Feature.CURRENT_RECIPE_STEP] = 0
 
             if ob.startswith("You are carrying:"):
                 items = self._gather_inventory(ob)
@@ -462,15 +504,26 @@ class CustomAgent:
                     self._searches[game_index] = RoomSearch(rooms, current_room, "Kitchen")
                     result.append(self._searches[game_index].get_next_direction())
                     continue
-                elif not feats[Feature.STARTED_RECIPE]:
+                elif feats[Feature.CURRENT_RECIPE_STEP] == 0:
                     # In Kitchen.
+                    # Not started cooking.
                     item = random.choice(_get_carrying(feats))
                     result.append("drop {}".format(item))
                     feats[_carrying_feat(item)] = False
                     feats[Feature.NUM_ITEMS_HELD] -= 1
                     continue
 
-            # TODO Go through recipe steps.
+            # Go through recipe steps.
+            recipe_steps = _get_recipe_steps(feats)
+            if feats[Feature.CURRENT_RECIPE_STEP] == len(recipe_steps):
+                # Done
+                result.append("eat meal")
+                continue
+            else:
+                next_recipe_step = recipe_steps[feats[Feature.CURRENT_RECIPE_STEP]]
+                result.append(_commandify_recipe_step(next_recipe_step))
+                feats[Feature.CURRENT_RECIPE_STEP] += 1
+                continue
 
             result.append("")
         return result
