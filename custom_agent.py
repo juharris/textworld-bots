@@ -1,13 +1,52 @@
+import random
 import re
 from collections import defaultdict
 from enum import Enum
-from typing import List, Dict, Any, Optional
+from operator import itemgetter
+from typing import Any, Dict, List, Optional, Union
 
 from textworld import EnvInfos
 
+from room import Room
+from room_search import opposite_dir, RoomSearch
+
+_directions = ["north", "east", "south", "west"]
+
+_all_ingredients = """
+black pepper
+bell pepper
+egg
+lettuce
+salt
+sugar
+pepper
+potato
+red hot pepper
+""".split('\n')
+_all_ingredients = list(filter(None, map(str.strip, _all_ingredients)))
+
+_max_capacity = 3
+"""
+The maximum number of objects that can be held.
+"""
+
+_rooms_with_ingredients = [
+    "Backyard",
+    "Garden",
+    "Kitchen",
+    "Pantry",
+    "Supermarket",
+]
+_ingredient_to_rooms = defaultdict(lambda: _rooms_with_ingredients, {
+    "egg": ["Kitchen", "Supermarket"],
+})
+"""
+The rooms that each ingredient can be found in.
+"""
+
 
 class Feature(Enum):
-    IN_KITCHEN = 0
+    OBSERVING_KITCHEN = 0
     COOKBOOK_PRESENT = 1
     SEEN_COOKBOOK = 2
     COOKBOOK_SHOWING = 3
@@ -17,22 +56,100 @@ class Feature(Enum):
     String for current room name.
     """
 
+    DONE_INIT_INVENTORY_CHECK = 5
 
-class Room(object):
-    def __init__(self, name: str, directions: list):
-        self.name = name
-        self.directions = dict.fromkeys(directions)
+    NUM_ITEMS_HELD = 6
+    HOLDING_KNIFE = 7
+
+    FOUND_ALL_INGREDIENTS = 8
+
+    OPENED_FRIDGE = 9
+
+    CURRENT_RECIPE_STEP = 10
+
+    def __repr__(self):
+        return self.name
 
 
-class Bfs(object):
-    def __init__(self, rooms: dict, current: Room, target: str):
-        self._rooms = rooms
-        self._current = current
-        self.target = target
+#######################################
+# Functions For Features
+#######################################
+def _feat(qualifier, term):
+    return (qualifier, term)
 
-    def get_next_direction(self):
-        # TODO Pick From self._current.directions.
-        return "east"
+
+def _carrying_feat(item):
+    return _feat('carrying', item)
+
+
+def _direction_feat(direction):
+    return _feat('available', direction)
+
+
+def _ingredient_feat(ingredient):
+    return _feat('ingredient', ingredient)
+
+
+def _ingredient_present_feat(ingredient):
+    return _feat('present', ingredient)
+
+
+def _recipe_step_feat(recipe_step_index, recipe_step):
+    return ('recipe_step', recipe_step_index, recipe_step)
+
+
+def _get_feats_with_qualifier(feats: Dict, qualifier: Union[str, tuple]):
+    result = []
+    if not isinstance(qualifier, tuple):
+        qualifier = (qualifier,)
+    for feat, val in feats.items():
+        if val != False and isinstance(feat, tuple) and feat[:len(qualifier)] == qualifier:
+            if len(feat) == len(qualifier) + 1:
+                result.append(feat[len(qualifier)])
+            else:
+                result.append(feat[len(qualifier):])
+    return result
+
+
+def _get_all_present_ingredients(feats: Dict) -> List[str]:
+    return _get_feats_with_qualifier(feats, 'present')
+
+
+def _get_all_required_ingredients(feats: Dict) -> List[str]:
+    return _get_feats_with_qualifier(feats, 'ingredient')
+
+
+def _get_carrying(feats: Dict):
+    return _get_feats_with_qualifier(feats, 'carrying')
+
+
+def _get_recipe_steps(feats: Dict):
+    """
+    :param feats: The features.
+    :return: The recipe steps in order.
+    """
+    recipe_feats = _get_feats_with_qualifier(feats, 'recipe_step')
+    recipe_feats.sort(key=itemgetter(0))
+    return [step[1] for step in recipe_feats]
+
+
+#######################################
+# END Functions For Features
+#######################################
+_roast_pattern = re.compile('roast (?P<ingredient>.*)')
+_fry_pattern = re.compile('fry (?P<ingredient>.*)')
+
+
+def _commandify_recipe_step(recipe_step):
+    result = recipe_step
+    m = _roast_pattern.match(recipe_step)
+    if m:
+        result = f"cook {m['ingredient']} with oven"
+    elif _fry_pattern.match(recipe_step):
+        m = _fry_pattern.match(recipe_step)
+        result = f"cook {m['ingredient']} with stove"
+
+    return result
 
 
 class CustomAgent:
@@ -124,11 +241,9 @@ class CustomAgent:
             self._init()
 
         self._epsiode_has_started = True
-        self._game_features = [defaultdict(lambda: False) for _ in obs]
-        self._ingredient_lists = [[] for _ in obs]
-        self._direction_lists = [[] for _ in obs]
-        self._rooms = [dict() for _ in obs]
-        self._searches = [None for _ in obs]
+        self._game_features: List[Dict] = [defaultdict(lambda: False) for _ in obs]
+        self._rooms: List[Dict] = [dict() for _ in obs]
+        self._searches: List[Optional[RoomSearch]] = [None for _ in obs]
 
     def _add_features(self, obs: List[str], infos: Dict[str, List[Any]]) -> None:
         """
@@ -140,12 +255,55 @@ class CustomAgent:
         """
         # TODO
         for ob, feats in zip(obs, self._game_features):
-            feats[Feature.IN_KITCHEN] = "-= Kitchen =-" in ob
-            feats[Feature.COOKBOOK_PRESENT] = feats[Feature.IN_KITCHEN] and " cookbook" in ob
+            # Defaults
+            if feats[Feature.NUM_ITEMS_HELD] == False:
+                feats[Feature.NUM_ITEMS_HELD] = 0
+
+            if feats[Feature.CURRENT_RECIPE_STEP] == False:
+                feats[Feature.CURRENT_RECIPE_STEP] = 0
+
+            if ob.startswith("You are carrying:"):
+                items = self._gather_inventory(ob)
+                feats[Feature.NUM_ITEMS_HELD] = len(items)
+                for item in items:
+                    feats[_carrying_feat(item)] = True
+
+            feats[Feature.OBSERVING_KITCHEN] = "-= Kitchen =-" in ob
+            feats[Feature.COOKBOOK_PRESENT] = feats[Feature.OBSERVING_KITCHEN] and " cookbook" in ob
             feats[Feature.COOKBOOK_SHOWING] = "\nIngredients:\n" in ob and "\nDirections:\n" in ob
+            if feats[Feature.COOKBOOK_SHOWING] and not feats[Feature.SEEN_COOKBOOK]:
+                feats[Feature.SEEN_COOKBOOK] = True
+                ingredients, recipe_steps = self._gather_recipe(ob)
+                assert len(ingredients) <= _max_capacity
+                for ingredient in ingredients:
+                    feats[_ingredient_feat(ingredient)] = True
+                for recipe_step_index, recipe_step in enumerate(recipe_steps):
+                    feats[_recipe_step_feat(recipe_step_index, recipe_step)] = True
+
+            ingredients_needed = tuple(
+                set(_get_all_required_ingredients(feats)) - set(_get_all_present_ingredients(feats)))
+            # TODO Handle when all ingredients can't be carried.
+            if len(ingredients_needed) == 0:
+                feats[Feature.FOUND_ALL_INGREDIENTS] = True
 
             feats[Feature.CURRENT_ROOM] = self._get_room_name(ob) or feats[Feature.CURRENT_ROOM]
-            print(feats)
+
+            for direction in _directions:
+                present = re.search(r'\b{}\b'.format(direction), ob, re.IGNORECASE) is not None
+                feats[_direction_feat(direction)] = present
+
+            if not feats[Feature.COOKBOOK_SHOWING]:
+                # TODO Just check needed ingredients.
+                # TODO Consider ingredient names that are subsets of another.
+                # E.g. don't confuse 'pepper' with 'bell pepper'.
+                for ingredient in sorted(_all_ingredients, key=len, reverse=True):
+                    present = re.search(r'\b{}\b'.format(ingredient), ob, re.IGNORECASE) is not None
+                    feats[_ingredient_present_feat(ingredient)] = present
+
+    def _gather_inventory(self, ob):
+        lines = ob.split('\n')
+        result = list(filter(None, map(str.strip, lines[1:])))
+        return result
 
     def _gather_recipe(self, ob):
         ingredients = []
@@ -179,17 +337,21 @@ class CustomAgent:
             result = m.group(1)
         return result
 
-    def _update_map(self, game_index, current_room: str, ob: str):
+    def _update_map(self, game_index,
+                    prev_room: Room, current_room_name: str, ob: str):
         rooms = self._rooms[game_index]
-        room = rooms.get(current_room)
+        room = rooms.get(current_room_name)
         if room is None:
             directions = []
-            for direction in ["north", "east", "south", "west"]:
-                if re.search(r'\b{}\b'.format(direction), ob):
+            for direction in _directions:
+                if self._game_features[game_index][_direction_feat(direction)]:
                     directions.append(direction)
-            room = Room(current_room, directions)
-            rooms[current_room] = room
-        # TODO Update adjacent rooms.
+            room = Room(current_room_name, directions)
+            rooms[current_room_name] = room
+        if self._searches[game_index] is not None and prev_room is not None:
+            prev_dir = self._searches[game_index].prev_direction_traveled
+            rooms[prev_room.name].directions[prev_dir] = room
+            room.directions[opposite_dir(prev_dir)] = prev_room
 
     def _end_episode(self, obs: List[str], scores: List[int], infos: Dict[str, List[Any]]) -> None:
         """
@@ -242,37 +404,126 @@ class CustomAgent:
                 result.append("wait")
                 continue
 
-            current_room = feats[Feature.CURRENT_ROOM]
-            self._update_map(game_index, current_room, ob)
+            current_room_name: str = feats[Feature.CURRENT_ROOM]
+            rooms = self._rooms[game_index]
 
-            if feats[Feature.COOKBOOK_SHOWING]:
-                feats[Feature.SEEN_COOKBOOK] = True
-                self._ingredient_lists[game_index], self._direction_lists[game_index] = self._gather_recipe(ob)
+            if self._searches[game_index] is not None:
+                self._searches[game_index].visited.add(current_room_name)
+                prev_room: Room = self._searches[game_index].current_room
+            else:
+                prev_room = None
+            self._update_map(game_index,
+                             prev_room, current_room_name, ob)
+            current_room = rooms[current_room_name]
+
+            if not feats[Feature.DONE_INIT_INVENTORY_CHECK]:
+                result.append("inventory")
+                feats[Feature.DONE_INIT_INVENTORY_CHECK] = True
+                continue
+
+            if self._searches[game_index] is not None:
+                # There is a search in progress.
+                self._searches[game_index].current_room = current_room
+                if self._searches[game_index].target_name == current_room_name:
+                    # Found target, stop the search.
+                    self._searches[game_index] = None
+                else:
+                    # Keep searching.
+                    direction = self._searches[game_index].get_next_direction()
+                    if direction is not None:
+                        result.append(direction)
+                        continue
+                    else:
+                        # No path exists.
+                        # TODO Need to backtrack to whatever we were doing before.
+                        self._searches[game_index] = None
 
             if not feats[Feature.SEEN_COOKBOOK] and feats[Feature.COOKBOOK_PRESENT]:
                 result.append("look cookbook")
                 continue
 
-            # TODO Keep track of last direction traveled so that the rooms can be updated.
-
-            if self._searches[game_index] is not None:
-                if self._searches[game_index].target == current_room:
-                    # Found target.
-                    self._searches[game_index] = None
-                else:
-                    # Keep searching.
-                    result.append(self._searches[game_index].get_next_direction())
-                    continue
-
-            if not Feature.SEEN_COOKBOOK in feats:
+            if not feats[Feature.SEEN_COOKBOOK]:
                 # Find the Kitchen.
-                self._searches[game_index] = Bfs(self._rooms[game_index], self._rooms[game_index][current_room],
-                                                 "Kitchen")
+                self._searches[game_index] = RoomSearch(rooms, current_room, "Kitchen")
                 result.append(self._searches[game_index].get_next_direction())
+                continue
+
+            if current_room_name == "Kitchen" \
+                    and not feats[Feature.FOUND_ALL_INGREDIENTS] \
+                    and not feats[Feature.OPENED_FRIDGE]:
+                feats[Feature.OPENED_FRIDGE] = True
+                result.append("open fridge")
                 continue
 
             # TODO Find ingredients.
 
-            result.append("")
+            # Check if current room has the ingredient.
+            if not feats[Feature.FOUND_ALL_INGREDIENTS]:
+                if current_room_name == "Kitchen" and feats[Feature.NUM_ITEMS_HELD] < _max_capacity:
+                    # Go find ingredients.
+                    # TODO Keep track of the target room and ingredient.
+                    ingredients_needed = tuple(
+                        set(_get_all_required_ingredients(feats)) - set(_get_all_present_ingredients(feats)))
+                    assert len(ingredients_needed) > 0
+                    direction = None
+                    while direction is None:
+                        ingredient = random.choice(ingredients_needed)
+                        room_options = _ingredient_to_rooms[ingredient]
+                        for target_room_name in random.sample(room_options, len(room_options)):
+                            self._searches[game_index] = RoomSearch(rooms, current_room, target_room_name)
+                            direction = self._searches[game_index].get_next_direction()
+                            if direction is not None:
+                                break
+                            else:
+                                # No path exists.
+                                self._searches[game_index] = None
 
+                    # Found a direction to go.
+                    result.append(direction)
+                    continue
+
+                elif current_room_name != "Kitchen" and feats[Feature.NUM_ITEMS_HELD] < _max_capacity:
+                    take_item = False
+                    for ingredient in set(_get_all_required_ingredients(feats)) & set(
+                            _get_all_present_ingredients(feats)):
+                        # Pick up the ingredient so that we can bring it to the Kitchen.
+                        result.append("take {}".format(ingredient))
+                        feats[_carrying_feat(ingredient)] = True
+                        feats[Feature.NUM_ITEMS_HELD] += 1
+                        take_item = True
+                        break
+                    if take_item:
+                        continue
+                    else:
+                        # TODO Keep track of the target room and ingredient.
+                        pass
+
+            if not feats[Feature.FOUND_ALL_INGREDIENTS] and feats[Feature.NUM_ITEMS_HELD] == _max_capacity:
+                if current_room_name != "Kitchen":
+                    # Bring items to Kitchen.
+                    self._searches[game_index] = RoomSearch(rooms, current_room, "Kitchen")
+                    result.append(self._searches[game_index].get_next_direction())
+                    continue
+                elif feats[Feature.CURRENT_RECIPE_STEP] == 0:
+                    # In Kitchen.
+                    # Not started cooking.
+                    item = random.choice(_get_carrying(feats))
+                    result.append("drop {}".format(item))
+                    feats[_carrying_feat(item)] = False
+                    feats[Feature.NUM_ITEMS_HELD] -= 1
+                    continue
+
+            # Go through recipe steps.
+            recipe_steps = _get_recipe_steps(feats)
+            if feats[Feature.CURRENT_RECIPE_STEP] == len(recipe_steps):
+                # Done
+                result.append("eat meal")
+                continue
+            else:
+                next_recipe_step = recipe_steps[feats[Feature.CURRENT_RECIPE_STEP]]
+                result.append(_commandify_recipe_step(next_recipe_step))
+                feats[Feature.CURRENT_RECIPE_STEP] += 1
+                continue
+
+            result.append("")
         return result
