@@ -55,12 +55,14 @@ class Feature(Enum):
     String for current room name.
     """
 
-    NUM_ITEMS_HELD = 5
-    HOLDING_KNIFE = 6
+    DONE_INIT_INVENTORY_CHECK = 5
 
-    FOUND_ALL_INGREDIENTS = 7
-    STARTED_RECIPE = 8
-    OPENED_FRIDGE = 9
+    NUM_ITEMS_HELD = 6
+    HOLDING_KNIFE = 7
+
+    FOUND_ALL_INGREDIENTS = 8
+    STARTED_RECIPE = 9
+    OPENED_FRIDGE = 10
 
     def __repr__(self):
         return self.name
@@ -218,16 +220,29 @@ class CustomAgent:
             if feats[Feature.NUM_ITEMS_HELD] == False:
                 feats[Feature.NUM_ITEMS_HELD] = 0
 
+            if ob.startswith("You are carrying:"):
+                items = self._gather_inventory(ob)
+                feats[Feature.NUM_ITEMS_HELD] = len(items)
+                for item in items:
+                    feats[_carrying_feat(item)] = True
+
             feats[Feature.OBSERVING_KITCHEN] = "-= Kitchen =-" in ob
             feats[Feature.COOKBOOK_PRESENT] = feats[Feature.OBSERVING_KITCHEN] and " cookbook" in ob
             feats[Feature.COOKBOOK_SHOWING] = "\nIngredients:\n" in ob and "\nDirections:\n" in ob
             if feats[Feature.COOKBOOK_SHOWING] and not feats[Feature.SEEN_COOKBOOK]:
                 feats[Feature.SEEN_COOKBOOK] = True
                 ingredients, recipe_steps = self._gather_recipe(ob)
+                assert len(ingredients) <= _max_capacity
                 for ingredient in ingredients:
                     feats[_ingredient_feat(ingredient)] = True
                 for recipe_step_index, recipe_step in enumerate(recipe_steps):
                     feats[_recipe_step_feat(recipe_step_index, recipe_step)] = True
+
+            ingredients_needed = tuple(
+                set(_get_all_required_ingredients(feats)) - set(_get_all_present_ingredients(feats)))
+            # TODO Handle when all ingredients can't be carried.
+            if len(ingredients_needed) == 0:
+                feats[Feature.FOUND_ALL_INGREDIENTS] = True
 
             feats[Feature.CURRENT_ROOM] = self._get_room_name(ob) or feats[Feature.CURRENT_ROOM]
 
@@ -242,6 +257,11 @@ class CustomAgent:
                 for ingredient in sorted(_all_ingredients, key=len, reverse=True):
                     present = re.search(r'\b{}\b'.format(ingredient), ob, re.IGNORECASE) is not None
                     feats[_ingredient_present_feat(ingredient)] = present
+
+    def _gather_inventory(self, ob):
+        lines = ob.split('\n')
+        result = list(filter(None, map(str.strip, lines[1:])))
+        return result
 
     def _gather_recipe(self, ob):
         ingredients = []
@@ -336,8 +356,6 @@ class CustomAgent:
 
         self._add_features(obs, infos)
 
-        # TODO Check inventory.
-
         result = []
         for game_index, ob, done, feats in zip(range(len(obs)), obs, dones, self._game_features):
             if done:
@@ -355,6 +373,11 @@ class CustomAgent:
             self._update_map(game_index,
                              prev_room, current_room_name, ob)
             current_room = rooms[current_room_name]
+
+            if not feats[Feature.DONE_INIT_INVENTORY_CHECK]:
+                result.append("inventory")
+                feats[Feature.DONE_INIT_INVENTORY_CHECK] = True
+                continue
 
             if self._searches[game_index] is not None:
                 # There is a search in progress.
@@ -383,7 +406,9 @@ class CustomAgent:
                 result.append(self._searches[game_index].get_next_direction())
                 continue
 
-            if current_room_name == "Kitchen" and not feats[Feature.OPENED_FRIDGE]:
+            if current_room_name == "Kitchen" \
+                    and not feats[Feature.FOUND_ALL_INGREDIENTS] \
+                    and not feats[Feature.OPENED_FRIDGE]:
                 feats[Feature.OPENED_FRIDGE] = True
                 result.append("open fridge")
                 continue
@@ -420,9 +445,9 @@ class CustomAgent:
                     for ingredient in set(_get_all_required_ingredients(feats)) & set(
                             _get_all_present_ingredients(feats)):
                         # Pick up the ingredient so that we can bring it to the Kitchen.
-                        feats[Feature.NUM_ITEMS_HELD] += 1
-                        feats[_carrying_feat(ingredient)] = True
                         result.append("take {}".format(ingredient))
+                        feats[_carrying_feat(ingredient)] = True
+                        feats[Feature.NUM_ITEMS_HELD] += 1
                         take_item = True
                         break
                     if take_item:
@@ -441,6 +466,8 @@ class CustomAgent:
                     # In Kitchen.
                     item = random.choice(_get_carrying(feats))
                     result.append("drop {}".format(item))
+                    feats[_carrying_feat(item)] = False
+                    feats[Feature.NUM_ITEMS_HELD] -= 1
                     continue
 
             # TODO Go through recipe steps.
