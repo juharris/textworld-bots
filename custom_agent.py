@@ -57,15 +57,16 @@ class Feature(Enum):
     """
 
     DONE_INIT_INVENTORY_CHECK = 5
+    INVENTORY_SHOWING = 6
 
-    NUM_ITEMS_HELD = 6
-    HOLDING_KNIFE = 7
+    NUM_ITEMS_HELD = 7
+    HOLDING_KNIFE = 8
 
-    FOUND_ALL_INGREDIENTS = 8
+    FOUND_ALL_INGREDIENTS = 9
 
-    OPENED_FRIDGE = 9
+    OPENED_FRIDGE = 10
 
-    CURRENT_RECIPE_STEP = 10
+    CURRENT_RECIPE_STEP = 11
 
     def __repr__(self):
         return self.name
@@ -149,6 +150,17 @@ def _commandify_recipe_step(recipe_step):
         m = _fry_pattern.match(recipe_step)
         result = f"cook {m['ingredient']} with stove"
 
+    return result
+
+
+def _get_ingredients_present(observation, ingredient_candidates):
+    result = []
+    covered = set()
+    for ingredient in sorted(ingredient_candidates, key=len, reverse=True):
+        m = re.search(r'\b{}\b'.format(ingredient), observation, re.IGNORECASE)
+        if m and m.start() not in covered:
+            covered.update(range(m.start(), m.end()))
+            result.append(ingredient)
     return result
 
 
@@ -253,7 +265,6 @@ class CustomAgent:
             obs: Initial feedback for each game.
             infos: Additional information for each game.
         """
-        # TODO
         for ob, feats in zip(obs, self._game_features):
             # Defaults
             if feats[Feature.NUM_ITEMS_HELD] == False:
@@ -262,11 +273,9 @@ class CustomAgent:
             if feats[Feature.CURRENT_RECIPE_STEP] == False:
                 feats[Feature.CURRENT_RECIPE_STEP] = 0
 
-            if ob.startswith("You are carrying:"):
-                items = self._gather_inventory(ob)
-                feats[Feature.NUM_ITEMS_HELD] = len(items)
-                for item in items:
-                    feats[_carrying_feat(item)] = True
+            feats[Feature.CURRENT_ROOM] = self._get_room_name(ob) or feats[Feature.CURRENT_ROOM]
+
+            feats[Feature.INVENTORY_SHOWING] = ob.startswith("You are carrying:")
 
             feats[Feature.OBSERVING_KITCHEN] = "-= Kitchen =-" in ob
             feats[Feature.COOKBOOK_PRESENT] = feats[Feature.OBSERVING_KITCHEN] and " cookbook" in ob
@@ -274,7 +283,6 @@ class CustomAgent:
             if feats[Feature.COOKBOOK_SHOWING] and not feats[Feature.SEEN_COOKBOOK]:
                 feats[Feature.SEEN_COOKBOOK] = True
                 ingredients, recipe_steps = self._gather_recipe(ob)
-                assert len(ingredients) <= _max_capacity
                 for ingredient in ingredients:
                     feats[_ingredient_feat(ingredient)] = True
                 for recipe_step_index, recipe_step in enumerate(recipe_steps):
@@ -282,23 +290,22 @@ class CustomAgent:
 
             ingredients_needed = tuple(
                 set(_get_all_required_ingredients(feats)) - set(_get_all_present_ingredients(feats)))
-            # TODO Handle when all ingredients can't be carried.
             if len(ingredients_needed) == 0:
                 feats[Feature.FOUND_ALL_INGREDIENTS] = True
 
-            feats[Feature.CURRENT_ROOM] = self._get_room_name(ob) or feats[Feature.CURRENT_ROOM]
+            if feats[Feature.INVENTORY_SHOWING]:
+                items = self._gather_inventory(ob)
+                feats[Feature.NUM_ITEMS_HELD] = len(items)
+                for item in items:
+                    feats[_carrying_feat(item)] = True
+            elif not feats[Feature.COOKBOOK_SHOWING]:
+                ingredients_present = _get_ingredients_present(ob, ingredients_needed)
+                for ingredient in ingredients_present:
+                    feats[_ingredient_present_feat(ingredient)] = True
 
             for direction in _directions:
                 present = re.search(r'\b{}\b'.format(direction), ob, re.IGNORECASE) is not None
                 feats[_direction_feat(direction)] = present
-
-            if not feats[Feature.COOKBOOK_SHOWING]:
-                # TODO Just check needed ingredients.
-                # TODO Consider ingredient names that are subsets of another.
-                # E.g. don't confuse 'pepper' with 'bell pepper'.
-                for ingredient in sorted(_all_ingredients, key=len, reverse=True):
-                    present = re.search(r'\b{}\b'.format(ingredient), ob, re.IGNORECASE) is not None
-                    feats[_ingredient_present_feat(ingredient)] = present
 
     def _gather_inventory(self, ob):
         lines = ob.split('\n')
@@ -455,8 +462,6 @@ class CustomAgent:
                 result.append("open fridge")
                 continue
 
-            # TODO Find ingredients.
-
             # Check if current room has the ingredient.
             if not feats[Feature.FOUND_ALL_INGREDIENTS]:
                 if current_room_name == "Kitchen" and feats[Feature.NUM_ITEMS_HELD] < _max_capacity:
@@ -495,7 +500,7 @@ class CustomAgent:
                     if take_item:
                         continue
                     else:
-                        # TODO Keep track of the target room and ingredient.
+                        # TODO Optimization: Keep track of the target room and ingredient.
                         pass
 
             if not feats[Feature.FOUND_ALL_INGREDIENTS] and feats[Feature.NUM_ITEMS_HELD] == _max_capacity:
@@ -513,6 +518,9 @@ class CustomAgent:
                     feats[Feature.NUM_ITEMS_HELD] -= 1
                     continue
 
+            # TODO Check if knife is needed.
+            # TODO Drop prepared item if needed.
+
             # Go through recipe steps.
             recipe_steps = _get_recipe_steps(feats)
             if feats[Feature.CURRENT_RECIPE_STEP] == len(recipe_steps):
@@ -523,7 +531,9 @@ class CustomAgent:
                 next_recipe_step = recipe_steps[feats[Feature.CURRENT_RECIPE_STEP]]
                 result.append(_commandify_recipe_step(next_recipe_step))
                 feats[Feature.CURRENT_RECIPE_STEP] += 1
+                # TODO Maybe remove from required ingredients (remove ingredient feature).
                 continue
+
 
             result.append("")
         return result
