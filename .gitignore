@@ -1,7 +1,7 @@
 # TextWorld
-test_submission.py
 
 all_games/
+debug_games/
 games/
 
 *.zip
