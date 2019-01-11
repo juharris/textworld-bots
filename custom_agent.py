@@ -1,4 +1,3 @@
-import logging
 import random
 import re
 from collections import defaultdict
@@ -16,9 +15,11 @@ _directions = ["north", "east", "south", "west"]
 _all_ingredients = """
 black pepper
 bell pepper
+carrot
 egg
 lettuce
 salt
+sliced carrot
 sugar
 pepper
 potato
@@ -67,9 +68,13 @@ class Feature(Enum):
 
     OPENED_FRIDGE = 10
 
-    CURRENT_RECIPE_STEP = 11
+    CARRYING_TOO_MUCH = 11
 
-    CARRYING_TOO_MUCH = 12
+    CANT_SEE_SUCH_THING = 12
+
+    STARTED_COOKING = 13
+
+    YOU_TAKE = 14
 
     def __repr__(self):
         return self.name
@@ -137,22 +142,65 @@ def _get_recipe_steps(feats: Dict):
     return [step[1] for step in recipe_feats]
 
 
+def _remove_recipe_step(feats: Dict, recipe_step: str):
+    recipe_feats = _get_feats_with_qualifier(feats, 'recipe_step')
+    for recipe_feat in recipe_feats:
+        if recipe_feat[1] == recipe_step:
+            feats[_recipe_step_feat(recipe_feat[0], recipe_step)] = False
+
+
 #######################################
 # END Functions For Features
 #######################################
-_roast_pattern = re.compile('^roast (?P<ingredient>.*)', re.IGNORECASE)
-_fry_pattern = re.compile('^fry (?P<ingredient>.*)', re.IGNORECASE)
-_require_knife_pattern = re.compile('^(chop|slice) ', re.IGNORECASE)
+
+def _gather_inventory(ob):
+    result = []
+    for line in ob.split('\n'):
+        line = line.strip()
+        if line.startswith("You are carrying:") or line.startswith("You are carrying nothing."):
+            continue
+        if line:
+            prefixes = ("a ", "an ", "some ", "raw ")
+            for prefix in prefixes:
+                if line.startswith(prefix):
+                    line = line[len(prefix):]
+            result.append(line)
+
+    return result
+
+
+# Cooking Patterns
+_fry_pattern = re.compile('^fry the (?P<ingredient>.*)', re.IGNORECASE)
+_grill_pattern = re.compile('^grill the (?P<ingredient>.*)', re.IGNORECASE)
+_roast_pattern = re.compile('^roast the (?P<ingredient>.*)', re.IGNORECASE)
+
+_fried_pattern = re.compile('^fried (?P<ingredient>.*)', re.IGNORECASE)
+_grilled_pattern = re.compile('^grilled (?P<ingredient>.*)', re.IGNORECASE)
+_roasted_pattern = re.compile('^roasted (?P<ingredient>.*)', re.IGNORECASE)
+
+# Cutting Patterns
+_chop_pattern = re.compile('^chop the (?P<ingredient>.*)', re.IGNORECASE)
+_dice_pattern = re.compile('^dice the (?P<ingredient>.*)', re.IGNORECASE)
+_slice_pattern = re.compile('^slice the (?P<ingredient>.*)', re.IGNORECASE)
+
+_chopped_pattern = re.compile('^chopped (?P<ingredient>.*)', re.IGNORECASE)
+_diced_pattern = re.compile('^diced (?P<ingredient>.*)', re.IGNORECASE)
+_sliced_pattern = re.compile('^sliced (?P<ingredient>.*)', re.IGNORECASE)
+
+_require_knife_pattern = re.compile('^(chop|dice|slice) ', re.IGNORECASE)
 
 
 def _commandify_recipe_step(recipe_step):
     result = recipe_step
-    m = _roast_pattern.match(recipe_step)
+    m = _fry_pattern.match(recipe_step)
     if m:
-        result = f"cook {m['ingredient']} with oven"
-    elif _fry_pattern.match(recipe_step):
-        m = _fry_pattern.match(recipe_step)
         result = f"cook {m['ingredient']} with stove"
+    elif _grill_pattern.match(recipe_step):
+        m = _grill_pattern.match(recipe_step)
+        result = f"cook {m['ingredient']} with BBQ"
+    elif _roast_pattern.match(recipe_step):
+        m = _roast_pattern.match(recipe_step)
+        result = f"cook {m['ingredient']} with oven"
 
     return result
 
@@ -168,8 +216,68 @@ def _get_ingredients_present(observation, ingredient_candidates):
     return result
 
 
-def _require_knife(recipe_step):
+def _get_recipe_step(ingredient):
+    if _fried_pattern.match(ingredient):
+        m = _fried_pattern.match(ingredient)
+        return f"fry the {m['ingredient']}"
+    if _grilled_pattern.match(ingredient):
+        m = _grilled_pattern.match(ingredient)
+        return f"grill the {m['ingredient']}"
+    if _roasted_pattern.match(ingredient):
+        m = _roasted_pattern.match(ingredient)
+        return f"roast the {m['ingredient']}"
+    if _chopped_pattern.match(ingredient):
+        m = _chopped_pattern.match(ingredient)
+        return f"chop the {m['ingredient']}"
+    if _diced_pattern.match(ingredient):
+        m = _diced_pattern.match(ingredient)
+        return f"dice the {m['ingredient']}"
+    if _sliced_pattern.match(ingredient):
+        m = _sliced_pattern.match(ingredient)
+        return f"slice the {m['ingredient']}"
+    raise Exception(f"Couldn't find recipe step to make \"{ingredient}\".")
+
+
+def _recipe_step_to_ingredient(recipe_step):
+    result = None
+    if _chop_pattern.match(recipe_step):
+        m = _chop_pattern.match(recipe_step)
+        result = f"chopped {m['ingredient']}"
+    elif _dice_pattern.match(recipe_step):
+        m = _dice_pattern.match(recipe_step)
+        result = f"diced {m['ingredient']}"
+    elif _slice_pattern.match(recipe_step):
+        m = _slice_pattern.match(recipe_step)
+        result = f"sliced {m['ingredient']}"
+    elif _fry_pattern.match(recipe_step):
+        m = _fry_pattern.match(recipe_step)
+        result = f"fried {m['ingredient']}"
+    elif _grill_pattern.match(recipe_step):
+        m = _grill_pattern.match(recipe_step)
+        result = f"grilled {m['ingredient']}"
+    elif _roast_pattern.match(recipe_step):
+        m = _roast_pattern.match(recipe_step)
+        result = f"roasted {m['ingredient']}"
+    return result
+
+
+def _requires_knife(recipe_step):
     return _require_knife_pattern.match(recipe_step) is not None
+
+
+def _base_ingredient(ingredient: str) -> str:
+    result = ingredient
+    prefixes = ("chopped ", "diced ", "sliced ",
+                "fried ", "grilled ", "roasted ")
+    updated = True
+    while updated:
+        updated = False
+        for prefix in prefixes:
+            if result.startswith(prefix):
+                result = result[len(prefix):]
+                updated = True
+
+    return result
 
 
 class CustomAgent:
@@ -278,15 +386,22 @@ class CustomAgent:
             if feats[Feature.NUM_ITEMS_HELD] == False:
                 feats[Feature.NUM_ITEMS_HELD] = 0
 
-            if feats[Feature.CURRENT_RECIPE_STEP] == False:
-                feats[Feature.CURRENT_RECIPE_STEP] = 0
+            # TODO Optimization: Check if fridge is already open in more ways.
+            if "The fridge is empty" in ob:
+                feats[Feature.OPENED_FRIDGE] = True
 
             feats[Feature.CURRENT_ROOM] = self._get_room_name(ob) or feats[Feature.CURRENT_ROOM]
 
-            feats[Feature.INVENTORY_SHOWING] = ob.startswith("You are carrying:")
+            feats[Feature.INVENTORY_SHOWING] = ob.startswith("You are carrying:") \
+                                               or ob.startswith("You are carrying nothing.")
 
             feats[Feature.CARRYING_TOO_MUCH] = ob.startswith("You're carrying too many things already.")
-            if feats[Feature.CARRYING_TOO_MUCH] or ob.startswith("You can't see any such thing."):
+
+            feats[Feature.CANT_SEE_SUCH_THING] = ob.startswith("You can't see any such thing.")
+
+            feats[Feature.YOU_TAKE] = ob.startswith("You take ")
+
+            if feats[Feature.CARRYING_TOO_MUCH] or feats[Feature.CANT_SEE_SUCH_THING]:
                 # Pick up failed.
                 feats[Feature.NUM_ITEMS_HELD] -= 1
 
@@ -301,67 +416,79 @@ class CustomAgent:
             if feats[Feature.COOKBOOK_SHOWING] and not feats[Feature.SEEN_COOKBOOK]:
                 feats[Feature.SEEN_COOKBOOK] = True
                 ingredients, recipe_steps = self._gather_recipe(ob)
+                carrying = set(_get_carrying(feats))
+                # TODO Remove recipe steps for what we're carrying.
                 for ingredient in ingredients:
-                    feats[_ingredient_feat(ingredient)] = True
+                    if ingredient not in carrying:
+                        feats[_ingredient_feat(ingredient)] = True
                 for recipe_step_index, recipe_step in enumerate(recipe_steps):
                     feats[_recipe_step_feat(recipe_step_index, recipe_step)] = True
 
-            ingredients_needed = tuple(
-                set(_get_all_required_ingredients(feats)) - set(_get_all_present_ingredients(feats)))
-            if len(ingredients_needed) == 0:
-                feats[Feature.FOUND_ALL_INGREDIENTS] = True
-
             if feats[Feature.INVENTORY_SHOWING]:
-                items = self._gather_inventory(ob)
+                items = _gather_inventory(ob)
                 feats[Feature.NUM_ITEMS_HELD] = len(items)
                 for item in items:
                     feats[_carrying_feat(item)] = True
-            elif not feats[Feature.COOKBOOK_SHOWING]:
+                    feats[_ingredient_feat(item)] = False
+                    # TODO Remove simpler versions.
+                    # TODO Remove recipe steps.
+            elif not feats[Feature.COOKBOOK_SHOWING] \
+                    and feats[Feature.SEEN_COOKBOOK] \
+                    and not feats[Feature.YOU_TAKE]:
+                ingredients_needed = _get_all_required_ingredients(feats)
                 ingredients_present = _get_ingredients_present(ob, ingredients_needed)
                 for ingredient in ingredients_present:
                     feats[_ingredient_present_feat(ingredient)] = True
+
+            if feats[Feature.SEEN_COOKBOOK]:
+                # Had before:
+                # and not feats[Feature.COOKBOOK_SHOWING] \
+                # and not feats[Feature.INVENTORY_SHOWING]\
+
+                # Discount ingredients we have that can be satisfied by later recipe steps.
+                # E.g. "fried carrot" when we have a "carrot" and need to fry later.
+                ingredients_to_make = tuple(_recipe_step_to_ingredient(step) for step in _get_recipe_steps(feats))
+                ingredients_to_make = set(filter(None, ingredients_to_make))
+                ingredients_needed = tuple(
+                    set(_get_all_required_ingredients(feats))
+                    # Had before: - set(_get_all_present_ingredients(feats))
+                    - ingredients_to_make)
+                if len(ingredients_needed) == 0:
+                    feats[Feature.FOUND_ALL_INGREDIENTS] = True
 
             for direction in _directions:
                 present = re.search(r'\b{}\b'.format(direction), ob, re.IGNORECASE) is not None
                 feats[_direction_feat(direction)] = present
 
-    def _gather_inventory(self, ob):
-        result = []
-        for line in ob.split('\n'):
-            line = line.strip()
-            if line.startswith("You are carrying:") or line.startswith("You are carrying nothing."):
-                continue
-            if line:
-                prefix = "a "
-                if line.startswith(prefix):
-                    line = line[len(prefix):]
-                result.append(line)
-
-        return result
-
     def _gather_recipe(self, ob):
         ingredients = []
-        directions = []
+        recipe_steps = []
         in_ingredients = False
-        in_directions = False
+        in_recipe_steps = False
         for line in ob.split('\n'):
             if len(line.strip()) == 0:
                 in_ingredients = False
-                in_directions = False
+                in_recipe_steps = False
                 continue
             if line == "Ingredients:":
                 in_ingredients = True
                 continue
             elif line == "Directions:":
-                in_directions = True
+                in_recipe_steps = True
                 continue
 
             if in_ingredients:
                 ingredients.append(line.strip())
-            elif in_directions:
-                directions.append(line.strip())
+            elif in_recipe_steps:
+                recipe_steps.append(line.strip())
 
-        return ingredients, directions
+        # Extend.
+        for recipe_step in recipe_steps:
+            modified_ingredient = _recipe_step_to_ingredient(recipe_step)
+            if modified_ingredient is not None:
+                ingredients.append(modified_ingredient)
+
+        return ingredients, recipe_steps
 
     @staticmethod
     def _get_room_name(ob: str) -> Optional[str]:
@@ -439,6 +566,8 @@ class CustomAgent:
                 continue
 
             try:
+                # TODO Handle BBQ'ing (right now assumes only cook in Kitchen).
+
                 current_room_name: str = feats[Feature.CURRENT_ROOM]
                 rooms = self._rooms[game_index]
 
@@ -449,7 +578,7 @@ class CustomAgent:
                     prev_room = None
                 self._update_map(game_index,
                                  prev_room, current_room_name, ob)
-                current_room = rooms[current_room_name]
+                current_room: Room = rooms[current_room_name]
 
                 if self._searches[game_index] is not None:
                     # There is a search in progress.
@@ -470,9 +599,14 @@ class CustomAgent:
 
                 if feats[Feature.CARRYING_TOO_MUCH]:
                     # Need to drop something.
-                    candidates = set(_get_carrying(feats)) - set(_get_all_required_ingredients(feats))
+                    candidates = tuple(set(_get_carrying(feats)) - set(_get_all_required_ingredients(feats)))
                     assert len(candidates) > 0
-                    item = random.choice(tuple(candidates))
+                    recipe_steps = _get_recipe_steps(feats)
+                    assert len(recipe_steps) > 0
+                    next_recipe_step = recipe_steps[0]
+                    item = random.choice(candidates)
+                    while item in next_recipe_step:
+                        item = random.choice(candidates)
                     result.append("drop {}".format(item))
                     feats[_carrying_feat(item)] = False
                     feats[Feature.NUM_ITEMS_HELD] -= 1
@@ -502,14 +636,33 @@ class CustomAgent:
 
                 # Check if current room has the ingredient.
                 if not feats[Feature.FOUND_ALL_INGREDIENTS]:
-                    if current_room_name == "Kitchen" and feats[Feature.NUM_ITEMS_HELD] < _max_capacity:
+                    if feats[Feature.NUM_ITEMS_HELD] < _max_capacity:
+                        # See if ingredient is here.
+                        ingredients_here = tuple(
+                            set(_get_all_required_ingredients(feats)) & set(_get_all_present_ingredients(feats)))
+                        if len(ingredients_here) > 0:
+                            ingredient = random.choice(ingredients_here)
+                            result.append("take {}".format(ingredient))
+                            feats[_ingredient_present_feat(ingredient)] = False
+                            feats[_carrying_feat(ingredient)] = True
+                            feats[Feature.NUM_ITEMS_HELD] += 1
+
+                            # Remove required ingredients.
+                            feats[_ingredient_feat(ingredient)] = False
+                            base_ingredient = _base_ingredient(ingredient)
+                            if base_ingredient != ingredient:
+                                feats[_ingredient_feat(base_ingredient)] = False
+                                _remove_recipe_step(feats, _get_recipe_step(ingredient))
+
+                            continue
+
+                    if current_room_name == "Kitchen":
                         # Go find ingredients.
-                        # TODO Keep track of the target room and ingredient.
                         ingredients_needed = tuple(
                             set(_get_all_required_ingredients(feats)) - set(_get_all_present_ingredients(feats)))
                         assert len(ingredients_needed) > 0
                         direction = None
-                        while direction is None:
+                        while len(current_room.directions) > 0 and direction is None:
                             ingredient = random.choice(ingredients_needed)
                             room_options = _ingredient_to_rooms[ingredient]
                             for target_room_name in random.sample(room_options, len(room_options)):
@@ -525,29 +678,13 @@ class CustomAgent:
                         result.append(direction)
                         continue
 
-                    elif current_room_name != "Kitchen" and feats[Feature.NUM_ITEMS_HELD] < _max_capacity:
-                        take_item = False
-                        for ingredient in set(_get_all_required_ingredients(feats)) & set(
-                                _get_all_present_ingredients(feats)):
-                            # Pick up the ingredient so that we can bring it to the Kitchen.
-                            result.append("take {}".format(ingredient))
-                            feats[_carrying_feat(ingredient)] = True
-                            feats[Feature.NUM_ITEMS_HELD] += 1
-                            take_item = True
-                            break
-                        if take_item:
-                            continue
-                        else:
-                            # TODO Optimization: Keep track of the target room and ingredient.
-                            pass
-
                 if not feats[Feature.FOUND_ALL_INGREDIENTS] and feats[Feature.NUM_ITEMS_HELD] == _max_capacity:
                     if current_room_name != "Kitchen":
                         # Bring items to Kitchen.
                         self._searches[game_index] = RoomSearch(rooms, current_room, "Kitchen")
                         result.append(self._searches[game_index].get_next_direction())
                         continue
-                    elif feats[Feature.CURRENT_RECIPE_STEP] == 0:
+                    elif not feats[Feature.STARTED_COOKING]:
                         # In Kitchen.
                         # Not started cooking.
                         item = random.choice(_get_carrying(feats))
@@ -558,25 +695,28 @@ class CustomAgent:
 
                 # Go through recipe steps.
                 recipe_steps = _get_recipe_steps(feats)
-                if feats[Feature.CURRENT_RECIPE_STEP] != len(recipe_steps):
-                    next_recipe_step = recipe_steps[feats[Feature.CURRENT_RECIPE_STEP]]
-                    if _require_knife(next_recipe_step) and not feats[Feature.HOLDING_KNIFE]:
+                if len(recipe_steps) > 0:
+                    next_recipe_step = recipe_steps[0]
+                    if _requires_knife(next_recipe_step) and not feats[Feature.HOLDING_KNIFE]:
                         if feats[Feature.NUM_ITEMS_HELD] < _max_capacity:
                             result.append("take knife")
                             feats[Feature.NUM_ITEMS_HELD] += 1
                             continue
                         else:
                             # Need to drop something.
-                            candidates = set(_get_carrying(feats)) - set(_get_all_required_ingredients(feats))
+                            candidates = tuple(set(_get_carrying(feats)) - set(_get_all_required_ingredients(feats)))
                             assert len(candidates) > 0
-                            item = random.choice(tuple(candidates))
+                            item = random.choice(candidates)
+                            while item in next_recipe_step:
+                                item = random.choice(candidates)
                             result.append("drop {}".format(item))
                             feats[_carrying_feat(item)] = False
                             feats[Feature.NUM_ITEMS_HELD] -= 1
                             continue
 
                     result.append(_commandify_recipe_step(next_recipe_step))
-                    feats[Feature.CURRENT_RECIPE_STEP] += 1
+                    _remove_recipe_step(feats, next_recipe_step)
+                    feats[Feature.STARTED_COOKING] = True
                     # TODO Maybe remove from required ingredients (remove ingredient feature).
                     continue
                 else:
