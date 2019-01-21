@@ -55,7 +55,7 @@ class RoomSearch(object):
                 else:
                     backtrack_target = self._backtrack_stack.pop()
                     self.optimal_path = self.get_path_to(backtrack_target)
-                    result = self.optimal_path.pop()
+                    result = self.optimal_path[0]
                     self.prev_direction_traveled = result
                     return result
             result = random.choice(direction_options)
