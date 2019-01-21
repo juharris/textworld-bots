@@ -1,5 +1,7 @@
+import logging
 import random
 import re
+import sys
 from collections import defaultdict
 from enum import Enum
 from operator import itemgetter
@@ -75,6 +77,8 @@ class Feature(Enum):
     STARTED_COOKING = 13
 
     YOU_TAKE = 14
+
+    BBQ_PRESENT = 15
 
     def __repr__(self):
         return self.name
@@ -410,6 +414,8 @@ class CustomAgent:
             elif ob.startswith("You drop the knife "):
                 feats[Feature.HOLDING_KNIFE] = False
 
+            feats[Feature.BBQ_PRESENT] = "BBQ" in ob
+
             feats[Feature.OBSERVING_KITCHEN] = "-= Kitchen =-" in ob
             feats[Feature.COOKBOOK_PRESENT] = feats[Feature.OBSERVING_KITCHEN] and " cookbook" in ob
             feats[Feature.COOKBOOK_SHOWING] = "\nIngredients:\n" in ob and "\nDirections:\n" in ob
@@ -550,6 +556,8 @@ class CustomAgent:
             The states for finished games are simply copy over until all
             games are done.
         """
+        debug = '--debug' in sys.argv
+
         if all(dones):
             self._end_episode(obs, scores, infos)
             return  # Nothing to return.
@@ -566,8 +574,6 @@ class CustomAgent:
                 continue
 
             try:
-                # TODO Handle BBQ'ing (right now assumes only cook in Kitchen).
-
                 current_room_name: str = feats[Feature.CURRENT_ROOM]
                 rooms = self._rooms[game_index]
 
@@ -714,6 +720,19 @@ class CustomAgent:
                             feats[Feature.NUM_ITEMS_HELD] -= 1
                             continue
 
+                    if _grill_pattern.match(next_recipe_step) and not feats[Feature.BBQ_PRESENT]:
+                        # Go to the BBQ in the Backyard.
+                        self._searches[game_index] = RoomSearch(rooms, current_room, "Backyard")
+                        result.append(self._searches[game_index].get_next_direction())
+                        continue
+                    elif (_fry_pattern.match(next_recipe_step)
+                          or _roast_pattern.match(next_recipe_step)
+                          or next_recipe_step == "prepare meal") \
+                            and current_room_name != "Kitchen":
+                        self._searches[game_index] = RoomSearch(rooms, current_room, "Kitchen")
+                        result.append(self._searches[game_index].get_next_direction())
+                        continue
+
                     result.append(_commandify_recipe_step(next_recipe_step))
                     _remove_recipe_step(feats, next_recipe_step)
                     feats[Feature.STARTED_COOKING] = True
@@ -724,14 +743,14 @@ class CustomAgent:
                     result.append("eat meal")
                     continue
             except:
-                # logging.exception("Will wait.")
-                pass
+                if debug:
+                    logging.exception("Will wait.")
             result.append(None)
 
         result = ["wait" if r is None else r for r in result]
-        for ob, r in zip(obs, result):
-            pass
-            # print(ob)
-            # print(f"ACT: \"{r}\"")
+        if debug:
+            for ob, r in zip(obs, result):
+                print(ob)
+                print(f"ACT: \"{r}\"")
 
         return result
