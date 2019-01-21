@@ -33,7 +33,7 @@ class RoomSearch(object):
         if self.target_name in self._rooms:
             self.optimal_path = self.get_path_to(self.target_name)
         if self.optimal_path is not None and len(self.optimal_path) > 0:
-            result = self.optimal_path.pop()
+            result = self.optimal_path[0]
             self.prev_direction_traveled = result
             return result
         result = None
