@@ -1,5 +1,7 @@
 FROM tavianator/textworld-codalab
 
+RUN apt-get update
+
 # For development:
 RUN apt-get install --yes byobu htop nano zip
 

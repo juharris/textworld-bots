@@ -30,10 +30,10 @@ class RoomSearch(object):
 
     def get_next_direction(self):
         # TODO Keep track if all rooms have been explored so that we can know if the target is on the map.
-        if self.target_name in self._rooms:
+        if self.target_name in self._rooms and self.optimal_path is None:
             self.optimal_path = self.get_path_to(self.target_name)
         if self.optimal_path is not None and len(self.optimal_path) > 0:
-            result = self.optimal_path[0]
+            result = self.optimal_path.pop(0)
             self.prev_direction_traveled = result
             return result
         result = None
@@ -55,7 +55,7 @@ class RoomSearch(object):
                 else:
                     backtrack_target = self._backtrack_stack.pop()
                     self.optimal_path = self.get_path_to(backtrack_target)
-                    result = self.optimal_path[0]
+                    result = self.optimal_path.pop(0)
                     self.prev_direction_traveled = result
                     return result
             result = random.choice(direction_options)
