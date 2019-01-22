@@ -80,6 +80,9 @@ class Feature(Enum):
 
     BBQ_PRESENT = 15
 
+    NEED_TO_OPEN_FIRST = 16
+    YOU_OPENED_DOOR = 17
+
     def __repr__(self):
         return self.name
 
@@ -87,12 +90,21 @@ class Feature(Enum):
 #######################################
 # Functions For Features
 #######################################
+_closed_door_pattern = re.compile(r'\bclosed (?P<item>[^\s]+ door) leading (?P<direction>[^\s.,!?]+)\b', re.IGNORECASE)
+_need_to_open_door_pattern = re.compile(r'You have to (?P<task>open .* door) first.')
+_you_open_door_pattern = re.compile(r'You open (.* door).')
+
+
 def _feat(qualifier, term):
     return (qualifier, term)
 
 
 def _carrying_feat(item):
     return _feat('carrying', item)
+
+
+def _direction_closed_feat(direction):
+    return _feat('closed', direction)
 
 
 def _direction_feat(direction):
@@ -394,7 +406,9 @@ class CustomAgent:
             if "The fridge is empty" in ob:
                 feats[Feature.OPENED_FRIDGE] = True
 
-            feats[Feature.CURRENT_ROOM] = self._get_room_name(ob) or feats[Feature.CURRENT_ROOM]
+            new_room = self._get_room_name(ob)
+            changed_room = new_room is not None and new_room != feats[Feature.CURRENT_ROOM]
+            feats[Feature.CURRENT_ROOM] = new_room or feats[Feature.CURRENT_ROOM]
 
             feats[Feature.INVENTORY_SHOWING] = ob.startswith("You are carrying:") \
                                                or ob.startswith("You are carrying nothing.")
@@ -404,6 +418,10 @@ class CustomAgent:
             feats[Feature.CANT_SEE_SUCH_THING] = ob.startswith("You can't see any such thing.")
 
             feats[Feature.YOU_TAKE] = ob.startswith("You take ")
+
+            feats[Feature.NEED_TO_OPEN_FIRST] = _need_to_open_door_pattern.search(ob) is not None
+
+            feats[Feature.YOU_OPENED_DOOR] = _you_open_door_pattern.search(ob) is not None
 
             if feats[Feature.CARRYING_TOO_MUCH] or feats[Feature.CANT_SEE_SUCH_THING]:
                 # Pick up failed.
@@ -462,9 +480,23 @@ class CustomAgent:
                 if len(ingredients_needed) == 0:
                     feats[Feature.FOUND_ALL_INGREDIENTS] = True
 
+            if changed_room:
+                # Check directions you can go.
+                for direction in _directions:
+                    present = re.search(r'\b{}\b'.format(direction), ob, re.IGNORECASE) is not None
+                    feats[_direction_feat(direction)] = present
+
+            # Check closed directions.
+            # Clear closed feats.
             for direction in _directions:
-                present = re.search(r'\b{}\b'.format(direction), ob, re.IGNORECASE) is not None
-                feats[_direction_feat(direction)] = present
+                if feats[_direction_closed_feat(direction)]:
+                    del feats[_direction_closed_feat(direction)]
+            m = _closed_door_pattern.search(ob)
+            while m:
+                item = m.group('item')
+                direction = m.group('direction')
+                feats[_direction_closed_feat(direction)] = item
+                m = _closed_door_pattern.search(ob, pos=m.endpos)
 
     def _gather_recipe(self, ob):
         ingredients = []
@@ -586,7 +618,18 @@ class CustomAgent:
                                  prev_room, current_room_name, ob)
                 current_room: Room = rooms[current_room_name]
 
+                if feats[Feature.NEED_TO_OPEN_FIRST]:
+                    m = _need_to_open_door_pattern.search(ob)
+                    assert m
+                    result.append(m.group('task'))
+                    continue
+
                 if self._searches[game_index] is not None:
+                    if feats[Feature.YOU_OPENED_DOOR]:
+                        # Optimization: Open the door before getting the error.
+                        direction = self._searches[game_index].prev_direction_traveled
+                        result.append(direction)
+                        continue
                     # There is a search in progress.
                     self._searches[game_index].current_room = current_room
                     if self._searches[game_index].target_name == current_room_name:
@@ -688,7 +731,8 @@ class CustomAgent:
                     if current_room_name != "Kitchen":
                         # Bring items to Kitchen.
                         self._searches[game_index] = RoomSearch(rooms, current_room, "Kitchen")
-                        result.append(self._searches[game_index].get_next_direction())
+                        direction = self._searches[game_index].get_next_direction()
+                        result.append(direction)
                         continue
                     elif not feats[Feature.STARTED_COOKING]:
                         # In Kitchen.
@@ -723,14 +767,16 @@ class CustomAgent:
                     if _grill_pattern.match(next_recipe_step) and not feats[Feature.BBQ_PRESENT]:
                         # Go to the BBQ in the Backyard.
                         self._searches[game_index] = RoomSearch(rooms, current_room, "Backyard")
-                        result.append(self._searches[game_index].get_next_direction())
+                        direction = self._searches[game_index].get_next_direction()
+                        result.append(direction)
                         continue
                     elif (_fry_pattern.match(next_recipe_step)
                           or _roast_pattern.match(next_recipe_step)
                           or next_recipe_step == "prepare meal") \
                             and current_room_name != "Kitchen":
                         self._searches[game_index] = RoomSearch(rooms, current_room, "Kitchen")
-                        result.append(self._searches[game_index].get_next_direction())
+                        direction = self._searches[game_index].get_next_direction()
+                        result.append(direction)
                         continue
 
                     result.append(_commandify_recipe_step(next_recipe_step))
