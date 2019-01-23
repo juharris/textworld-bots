@@ -177,9 +177,13 @@ def _gather_inventory(ob):
             continue
         if line:
             prefixes = ("a ", "an ", "some ", "raw ")
-            for prefix in prefixes:
-                if line.startswith(prefix):
-                    line = line[len(prefix):]
+            modified = True
+            while modified:
+                modified = False
+                for prefix in prefixes:
+                    if line.startswith(prefix):
+                        modified = True
+                        line = line[len(prefix):]
             result.append(line)
 
     return result
@@ -471,7 +475,7 @@ class CustomAgent:
 
                 # Discount ingredients we have that can be satisfied by later recipe steps.
                 # E.g. "fried carrot" when we have a "carrot" and need to fry later.
-                ingredients_to_make = tuple(_recipe_step_to_ingredient(step) for step in _get_recipe_steps(feats))
+                ingredients_to_make = tuple(map(_recipe_step_to_ingredient, _get_recipe_steps(feats)))
                 ingredients_to_make = set(filter(None, ingredients_to_make))
                 ingredients_needed = tuple(
                     set(_get_all_required_ingredients(feats))
@@ -549,6 +553,7 @@ class CustomAgent:
             rooms[current_room_name] = room
         if self._searches[game_index] is not None and prev_room is not None:
             prev_dir = self._searches[game_index].prev_direction_traveled
+            assert prev_room.name != room.name, f"{prev_room.name}--{prev_dir}-->{room.name}"
             rooms[prev_room.name].directions[prev_dir] = room
             room.directions[opposite_dir(prev_dir)] = prev_room
 
@@ -601,6 +606,8 @@ class CustomAgent:
 
         result = []
         for game_index, ob, done, feats in zip(range(len(obs)), obs, dones, self._game_features):
+            if debug:
+                print(ob)
             if done:
                 result.append("wait")
                 continue
@@ -614,8 +621,9 @@ class CustomAgent:
                     prev_room: Room = self._searches[game_index].current_room
                 else:
                     prev_room = None
-                self._update_map(game_index,
-                                 prev_room, current_room_name, ob)
+                if not feats[Feature.NEED_TO_OPEN_FIRST] and not feats[Feature.YOU_OPENED_DOOR]:
+                    self._update_map(game_index,
+                                     prev_room, current_room_name, ob)
                 current_room: Room = rooms[current_room_name]
 
                 if feats[Feature.NEED_TO_OPEN_FIRST]:
@@ -723,9 +731,10 @@ class CustomAgent:
                                     # No path exists.
                                     self._searches[game_index] = None
 
-                        # Found a direction to go.
-                        result.append(direction)
-                        continue
+                        if direction is not None:
+                            # Found a direction to go.
+                            result.append(direction)
+                            continue
 
                 if not feats[Feature.FOUND_ALL_INGREDIENTS] and feats[Feature.NUM_ITEMS_HELD] == _max_capacity:
                     if current_room_name != "Kitchen":
@@ -779,6 +788,7 @@ class CustomAgent:
                         result.append(direction)
                         continue
 
+                    # TODO Maybe check if the ingredient is already modified.
                     result.append(_commandify_recipe_step(next_recipe_step))
                     _remove_recipe_step(feats, next_recipe_step)
                     feats[Feature.STARTED_COOKING] = True
@@ -795,8 +805,6 @@ class CustomAgent:
 
         result = ["wait" if r is None else r for r in result]
         if debug:
-            for ob, r in zip(obs, result):
-                print(ob)
-                print(f"ACT: \"{r}\"")
+            print(f"ACT: \"{result[-1]}\"")
 
         return result
