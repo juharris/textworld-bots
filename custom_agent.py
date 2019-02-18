@@ -369,7 +369,10 @@ class CustomAgent:
                 extras=["recipe"],                          # Handicap 4
                 admissible_commands,                        # Handicap 5
         """
-        return EnvInfos()
+        # return EnvInfos()
+        # Get all admissible commands so that this bot has a handicap on the scoreboard.
+        # Even though we don't use the commands, we do use prior knowledge so in effect we should have a handicap.
+        return EnvInfos(admissible_commands=True)
 
     def _init(self) -> None:
         """ Initialize the agent. """
