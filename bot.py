@@ -2,11 +2,11 @@ import glob
 import logging
 import os
 import random
+import re
 
 import cherrypy
 import textworld
 from expiringdict import ExpiringDict
-
 
 """
 Start:
@@ -16,27 +16,52 @@ Query:
 curl localhost:5050/process  -H 'Content-Type: application/json' --data '{"user":1, "command":"go south"}'
 """
 
+TEXTWORLD_HEADER = "\n\n\n                    ________  ________  __    __  ________        \n                   |        \\|        \\|  \\  |  \\|        \\       \n                    \\$$$$$$$$| $$$$$$$$| $$  | $$ \\$$$$$$$$       \n                      | $$   | $$__     \\$$\\/  $$   | $$          \n                      | $$   | $$  \\     >$$  $$    | $$          \n                      | $$   | $$$$$    /  $$$$\\    | $$          \n                      | $$   | $$_____ |  $$ \\$$\\   | $$          \n                      | $$   | $$     \\| $$  | $$   | $$          \n                       \\$$    \\$$$$$$$$ \\$$   \\$$    \\$$          \n              __       __   ______   _______   __        _______  \n             |  \\  _  |  \\ /      \\ |       \\ |  \\      |       \\ \n             | $$ / \\ | $$|  $$$$$$\\| $$$$$$$\\| $$      | $$$$$$$\\\n             | $$/  $\\| $$| $$  | $$| $$__| $$| $$      | $$  | $$\n             | $$  $$$\\ $$| $$  | $$| $$    $$| $$      | $$  | $$\n             | $$ $$\\$$\\$$| $$  | $$| $$$$$$$\\| $$      | $$  | $$\n             | $$$$  \\$$$$| $$__/ $$| $$  | $$| $$_____ | $$__/ $$\n             | $$$    \\$$$ \\$$    $$| $$  | $$| $$     \\| $$    $$\n              \\$$      \\$$  \\$$$$$$  \\$$   \\$$ \\$$$$$$$$ \\$$$$$$$ \n\n"
+
 
 class Game(object):
-    def __init__(self, path):
-        self._env = textworld.start(path)
-        self._game_state = self._env.reset()
+    def __init__(self, logger: logging.Logger):
+        self._logger = logger
+        self._start_new_game()
 
     def _clean_output(self, output):
-        # TODO
-        return output
+        # TODO Check if using "#" for a title is okay.
+        result = re.sub(r'\n-=\s*([^=]+) =-\n', "\n# \\1\n", output)
+        if result.startswith(TEXTWORLD_HEADER):
+            result = result[len(TEXTWORLD_HEADER):]
+        return result
+
+    def _normalize_command(self, command):
+        result = command.lower()
+        return result
+
+    def _start_new_game(self):
+        # Pick random game.
+        while True:
+            path = random.choice(glob.glob('all_games/train/*.ulx'))
+            self._logger.info("Will try to start game at \"%s\".", path)
+            try:
+                self._env = textworld.start(path)
+                self._game_state = self._env.reset()
+                break
+            except:
+                self._logger.exception("Error using game at \"%s\".\nWill try with another game.", path)
 
     def get_feedback(self):
-        return self._game_state.feedback
+        return self._clean_output(self._game_state.feedback)
 
     def process(self, command: str):
-        if command.lower() in ("reset", "restart"):
+        normalized_command = self._normalize_command(command)
+        if normalized_command in ("new game", "start a new game"):
+            self._start_new_game()
+        elif normalized_command in ("reset", "restart"):
             self._game_state = self._env.reset()
-            return self._game_state.feedback
-        if command.lower() in ("score",):
-            return f"Your score is {self._game_state.score}"
-        self._game_state, reward, done = self._env.step(command)
-        return self._game_state.feedback
+        elif normalized_command in ("score",):
+            return f"Your score is {self._game_state.score}."
+        else:
+            self._game_state, reward, done = self._env.step(command)
+        result = self._game_state.feedback
+        return self._clean_output(result)
 
 
 class BotService(object):
@@ -54,15 +79,7 @@ class BotService(object):
 
         game = self._game_cache.get(user)
         if game is None:
-            # Pick random game.
-            while True:
-                path = random.choice(glob.glob('all_games/train/*.ulx'))
-                self._logger.info("Will try to start game at \"%s\".", path)
-                try:
-                    game = Game(path)
-                    break
-                except:
-                    self._logger.exception("Error using game at \"%s\".\nWill try with another game.", path)
+            game = Game(self._logger)
             self._game_cache[user] = game
             result = game.get_feedback()
         else:
