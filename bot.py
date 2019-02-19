@@ -11,9 +11,11 @@ from expiringdict import ExpiringDict
 """
 Start:
 BOT_LOG_LEVEL=DEBUG python3 bot.py
+or:
+docker run --rm -it --detach -p 5050:5050 -v ${PWD}:/root/workspace/textworld-bots --name tw tw bash -c 'BOT_LOG_LEVEL=DEBUG cd /root/workspace/textworld-bots && python3 bot.py' 
 
 Query: 
-curl localhost:5050/process  -H 'Content-Type: application/json' --data '{"user":1, "command":"go south"}'
+curl localhost:5050/process  -H 'Content-Type: application/json' --data '{"user": 1, "command": "go south"}'
 """
 
 TEXTWORLD_HEADER = "\n\n\n                    ________  ________  __    __  ________        \n                   |        \\|        \\|  \\  |  \\|        \\       \n                    \\$$$$$$$$| $$$$$$$$| $$  | $$ \\$$$$$$$$       \n                      | $$   | $$__     \\$$\\/  $$   | $$          \n                      | $$   | $$  \\     >$$  $$    | $$          \n                      | $$   | $$$$$    /  $$$$\\    | $$          \n                      | $$   | $$_____ |  $$ \\$$\\   | $$          \n                      | $$   | $$     \\| $$  | $$   | $$          \n                       \\$$    \\$$$$$$$$ \\$$   \\$$    \\$$          \n              __       __   ______   _______   __        _______  \n             |  \\  _  |  \\ /      \\ |       \\ |  \\      |       \\ \n             | $$ / \\ | $$|  $$$$$$\\| $$$$$$$\\| $$      | $$$$$$$\\\n             | $$/  $\\| $$| $$  | $$| $$__| $$| $$      | $$  | $$\n             | $$  $$$\\ $$| $$  | $$| $$    $$| $$      | $$  | $$\n             | $$ $$\\$$\\$$| $$  | $$| $$$$$$$\\| $$      | $$  | $$\n             | $$$$  \\$$$$| $$__/ $$| $$  | $$| $$_____ | $$__/ $$\n             | $$$    \\$$$ \\$$    $$| $$  | $$| $$     \\| $$    $$\n              \\$$      \\$$  \\$$$$$$  \\$$   \\$$ \\$$$$$$$$ \\$$$$$$$ \n\n"
@@ -25,8 +27,7 @@ class Game(object):
         self._start_new_game()
 
     def _clean_output(self, output):
-        # TODO Check if using "#" for a title is okay for the Bot Framework.
-        result = re.sub(r'\n-=\s*([^=]+) =-\n', "\n# \\1\n", output)
+        result = re.sub(r'-=\s*([^=]+) =-\n', "\n# \\1\n", output)
         if result.startswith(TEXTWORLD_HEADER):
             result = result[len(TEXTWORLD_HEADER):]
         return result

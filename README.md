@@ -3,6 +3,8 @@ Bots to play [TextWorld](https://aka.ms/textworld).
 
 # Setup
 
+Download the games from [CodaLab][codalab] to `all_games/train`.
+
 ```bash
 docker build -t tw .
 ```
