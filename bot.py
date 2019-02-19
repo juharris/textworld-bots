@@ -25,7 +25,7 @@ class Game(object):
         self._start_new_game()
 
     def _clean_output(self, output):
-        # TODO Check if using "#" for a title is okay.
+        # TODO Check if using "#" for a title is okay for the Bot Framework.
         result = re.sub(r'\n-=\s*([^=]+) =-\n', "\n# \\1\n", output)
         if result.startswith(TEXTWORLD_HEADER):
             result = result[len(TEXTWORLD_HEADER):]
