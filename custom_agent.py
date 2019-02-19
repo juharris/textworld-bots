@@ -18,6 +18,7 @@ _all_ingredients = """
 black pepper
 bell pepper
 carrot
+cilantro
 egg
 lettuce
 salt
@@ -26,6 +27,7 @@ sugar
 pepper
 potato
 red hot pepper
+red onion
 """.split('\n')
 _all_ingredients = list(filter(None, map(str.strip, _all_ingredients)))
 
@@ -236,26 +238,33 @@ def _get_ingredients_present(observation, ingredient_candidates):
     return result
 
 
-def _get_recipe_step(ingredient):
+def _get_recipe_steps_to_make(ingredient) -> set:
+    result = set()
     if _fried_pattern.match(ingredient):
         m = _fried_pattern.match(ingredient)
-        return f"fry the {m['ingredient']}"
+        result.add(f"fry the {_base_ingredient(m['ingredient'])}")
+        result.update(_get_recipe_steps_to_make(m['ingredient']))
     if _grilled_pattern.match(ingredient):
         m = _grilled_pattern.match(ingredient)
-        return f"grill the {m['ingredient']}"
+        result.add(f"grill the {_base_ingredient(m['ingredient'])}")
+        result.update(_get_recipe_steps_to_make(m['ingredient']))
     if _roasted_pattern.match(ingredient):
         m = _roasted_pattern.match(ingredient)
-        return f"roast the {m['ingredient']}"
+        result.add(f"roast the {_base_ingredient(m['ingredient'])}")
+        result.update(_get_recipe_steps_to_make(m['ingredient']))
     if _chopped_pattern.match(ingredient):
         m = _chopped_pattern.match(ingredient)
-        return f"chop the {m['ingredient']}"
+        result.add(f"chop the {_base_ingredient(m['ingredient'])}")
+        result.update(_get_recipe_steps_to_make(m['ingredient']))
     if _diced_pattern.match(ingredient):
         m = _diced_pattern.match(ingredient)
-        return f"dice the {m['ingredient']}"
+        result.add(f"dice the {_base_ingredient(m['ingredient'])}")
+        result.update(_get_recipe_steps_to_make(m['ingredient']))
     if _sliced_pattern.match(ingredient):
         m = _sliced_pattern.match(ingredient)
-        return f"slice the {m['ingredient']}"
-    raise Exception(f"Couldn't find recipe step to make \"{ingredient}\".")
+        result.add(f"slice the {_base_ingredient(m['ingredient'])}")
+        result.update(_get_recipe_steps_to_make(m['ingredient']))
+    return result
 
 
 def _recipe_step_to_ingredient(recipe_step):
@@ -448,12 +457,18 @@ class CustomAgent:
                 feats[Feature.SEEN_COOKBOOK] = True
                 ingredients, recipe_steps = self._gather_recipe(ob)
                 carrying = set(_get_carrying(feats))
-                # TODO Remove recipe steps for what we're carrying.
                 for ingredient in ingredients:
                     if ingredient not in carrying:
                         feats[_ingredient_feat(ingredient)] = True
+
+                # Remove recipe steps for what we're carrying.
+                done_recipe_steps = set()
+                for item in carrying:
+                    done_recipe_steps.update(_get_recipe_steps_to_make(item))
+
                 for recipe_step_index, recipe_step in enumerate(recipe_steps):
-                    feats[_recipe_step_feat(recipe_step_index, recipe_step)] = True
+                    if recipe_step not in done_recipe_steps:
+                        feats[_recipe_step_feat(recipe_step_index, recipe_step)] = True
 
             if feats[Feature.INVENTORY_SHOWING]:
                 items = _gather_inventory(ob)
@@ -461,8 +476,11 @@ class CustomAgent:
                 for item in items:
                     feats[_carrying_feat(item)] = True
                     feats[_ingredient_feat(item)] = False
-                    # TODO Remove simpler versions.
-                    # TODO Remove recipe steps.
+                    base_ingredient = _base_ingredient(item)
+                    if base_ingredient != item:
+                        feats[_ingredient_feat(base_ingredient)] = False
+                        for step in _get_recipe_steps_to_make(item):
+                            _remove_recipe_step(feats, step)
             elif not feats[Feature.COOKBOOK_SHOWING] \
                     and feats[Feature.SEEN_COOKBOOK] \
                     and not feats[Feature.YOU_TAKE]:
@@ -712,7 +730,8 @@ class CustomAgent:
                             base_ingredient = _base_ingredient(ingredient)
                             if base_ingredient != ingredient:
                                 feats[_ingredient_feat(base_ingredient)] = False
-                                _remove_recipe_step(feats, _get_recipe_step(ingredient))
+                                for step in _get_recipe_steps_to_make(ingredient):
+                                    _remove_recipe_step(feats, step)
 
                             continue
 
@@ -739,7 +758,7 @@ class CustomAgent:
                             result.append(direction)
                             continue
 
-                if not feats[Feature.FOUND_ALL_INGREDIENTS] and feats[Feature.NUM_ITEMS_HELD] == _max_capacity:
+                if not feats[Feature.FOUND_ALL_INGREDIENTS] and feats[Feature.NUM_ITEMS_HELD] >= _max_capacity:
                     if current_room_name != "Kitchen":
                         # Bring items to Kitchen.
                         self._searches[game_index] = RoomSearch(rooms, current_room, "Kitchen")
