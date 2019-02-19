@@ -378,9 +378,9 @@ class CustomAgent:
                 extras=["recipe"],                          # Handicap 4
                 admissible_commands,                        # Handicap 5
         """
-        # return EnvInfos()
         # Get all admissible commands so that this bot has a handicap on the scoreboard.
         # Even though we don't use the commands, we do use prior knowledge so in effect we should have a handicap.
+        # return EnvInfos()
         return EnvInfos(admissible_commands=True)
 
     def _init(self) -> None:
@@ -460,6 +460,8 @@ class CustomAgent:
                 for ingredient in ingredients:
                     if ingredient not in carrying:
                         feats[_ingredient_feat(ingredient)] = True
+                    else:
+                        feats[_ingredient_feat(ingredient)] = False
 
                 # Remove recipe steps for what we're carrying.
                 done_recipe_steps = set()
@@ -687,6 +689,10 @@ class CustomAgent:
                         item = random.choice(candidates)
                     result.append("drop {}".format(item))
                     feats[_carrying_feat(item)] = False
+                    # TODO Note that we might need this later.
+                    # if feats.get(_ingredient_feat(item)) == False:
+                    #     feats[_ingredient_feat(item)] = True
+                    #     feats[Feature.FOUND_ALL_INGREDIENTS] = False
                     feats[Feature.NUM_ITEMS_HELD] -= 1
                     continue
 
@@ -771,6 +777,11 @@ class CustomAgent:
                         item = random.choice(_get_carrying(feats))
                         result.append("drop {}".format(item))
                         feats[_carrying_feat(item)] = False
+                        # TODO Note that we might need this later.
+                        # if feats.get(_ingredient_feat(item)) == False:
+                        #     feats[_ingredient_feat(item)] = True
+                        #     feats[Feature.FOUND_ALL_INGREDIENTS] = False
+
                         feats[Feature.NUM_ITEMS_HELD] -= 1
                         continue
 
@@ -792,6 +803,10 @@ class CustomAgent:
                                 item = random.choice(candidates)
                             result.append("drop {}".format(item))
                             feats[_carrying_feat(item)] = False
+                            # TODO Note that we might need this later.
+                            # if feats.get(_ingredient_feat(item)) == False:
+                            #     feats[_ingredient_feat(item)] = True
+                            #     feats[Feature.FOUND_ALL_INGREDIENTS] = False
                             feats[Feature.NUM_ITEMS_HELD] -= 1
                             continue
 
